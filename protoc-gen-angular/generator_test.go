@@ -1,4 +1,4 @@
-package genangular
+package main
 
 import (
 	"testing"
