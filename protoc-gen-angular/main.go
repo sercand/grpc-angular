@@ -7,14 +7,15 @@ import (
 	"os"
 	"strings"
 
-	"github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway/descriptor"
 	"github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
 	plugin "github.com/golang/protobuf/protoc-gen-go/plugin"
+	"github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway/descriptor"
 )
 
 var (
-	importPrefix = flag.String("import_prefix", "", "prefix to be added to go package paths for imported proto files")
+	importPrefix = flag.String("import_prefix", "", "prefix to be added to angular package paths for imported proto files")
+	aliases      = flag.String("alias", "", "package aliases")
 	file         = flag.String("file", "stdin", "where to load data from")
 )
 
@@ -36,7 +37,6 @@ func main() {
 	flag.Parse()
 	defer glog.Flush()
 	reg := descriptor.NewRegistry()
-
 	glog.V(1).Info("Processing code generator request")
 	f := os.Stdin
 	if *file != "stdin" {
@@ -65,7 +65,16 @@ func main() {
 			}
 		}
 	}
-	g := New(reg)
+	aliasList := make([]packageAlias, 0)
+	if len(*aliases) > 0 {
+		aliasGroup := strings.Split(*aliases, ";")
+		for _, l := range aliasGroup {
+			anAlias := strings.Split(l, "=")
+			aliasList = append(aliasList, packageAlias{anAlias[0], anAlias[1]})
+		}
+	}
+	g := NewGenerator(reg, aliasList)
+
 	reg.SetPrefix(*importPrefix)
 	if err := reg.Load(req); err != nil {
 		glog.Errorf("genangular emit error: %v", err)

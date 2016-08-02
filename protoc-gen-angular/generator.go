@@ -16,20 +16,44 @@ import (
 	"path"
 )
 
+type packageAlias struct {
+	first  string
+	second string
+}
+
 type generator struct {
 	reg       *descriptor.Registry
 	mapValues []string
+	aliases   []packageAlias
 }
 
 // New returns a new generator which generates grpc gateway files.
-func New(reg *descriptor.Registry) gen.Generator {
-	return &generator{reg: reg, mapValues: []string{}}
+func NewGenerator(reg *descriptor.Registry, a []packageAlias) gen.Generator {
+	return &generator{reg: reg, mapValues: []string{}, aliases: a}
+}
+func (g *generator) getFileName(file *descriptor.File) string {
+	n := file.GetName()
+	for _, a := range g.aliases {
+		if a.first == n {
+			return a.second
+		}
+	}
+	return n
+}
+
+func (g *generator) importName(file *descriptor.File) string {
+	fname := g.getFileName(file)
+	fbase := strings.TrimSuffix(fname, filepath.Ext(fname))
+	fbase = strings.Replace(fbase, "/", "_", -1)
+	fbase = strings.Replace(fbase, ".", "_", -1)
+	return file.GetPackage() + "_" + fbase
 }
 
 func (g *generator) getRawTypeName(file *descriptor.File, a string) string {
 	m, err := g.reg.LookupMsg(file.GetPackage(), a)
 	isMessage := false
 	isEnum := false
+	prefix := ""
 	if err == nil {
 		isMessage = true
 	}
@@ -40,19 +64,23 @@ func (g *generator) getRawTypeName(file *descriptor.File, a string) string {
 	var mf *descriptor.File
 	ss := strings.Split(a, ".")
 	if isMessage {
+		if len(m.Outers) > 0 {
+			prefix = strings.Join(m.Outers, "")
+		}
 		mf = m.File
 	} else if isEnum {
 		mf = e.File
+		if len(e.Outers) > 0 {
+			prefix = strings.Join(e.Outers, "")
+		}
 	} else {
 		panic(fmt.Errorf("%s is not message or enum", a))
 		return ""
 	}
 	if mf.GetName() == file.GetName() {
-		return ss[len(ss)-1]
+		return prefix + ss[len(ss)-1]
 	} else {
-		fname := mf.GetName()
-		fbase := strings.TrimSuffix(fname, filepath.Ext(fname))
-		return mf.GetPackage() + "_" + fbase + "." + ss[len(ss)-1]
+		return g.importName(mf) + "." + prefix + ss[len(ss)-1]
 	}
 }
 
@@ -91,11 +119,11 @@ func (g *generator) isMap(field *desc.FieldDescriptorProto) bool {
 
 func (g *generator) printMessageField(w io.Writer, field *desc.FieldDescriptorProto, file *descriptor.File) {
 	if g.isMap(field) {
-		fmt.Fprintf(w, "    %s: any;\n", field.GetJsonName())
+		fmt.Fprintf(w, "  %s: any;\n", field.GetJsonName())
 	} else if field.GetLabel() == desc.FieldDescriptorProto_LABEL_REPEATED {
-		fmt.Fprintf(w, "    %s: %s[];\n", field.GetJsonName(), g.getTypeName(field.GetType(), field, file))
+		fmt.Fprintf(w, "  %s: %s[];\n", field.GetJsonName(), g.getTypeName(field.GetType(), field, file))
 	} else {
-		fmt.Fprintf(w, "    %s: %s;\n", field.GetJsonName(), g.getTypeName(field.GetType(), field, file))
+		fmt.Fprintf(w, "  %s: %s;\n", field.GetJsonName(), g.getTypeName(field.GetType(), field, file))
 	}
 }
 
@@ -140,11 +168,9 @@ func (g *generator) generate(file *descriptor.File) (string, error) {
 // DO NOT EDIT!
 `)
 	if len(file.Services) > 0 {
-		fmt.Fprintln(&buf, `
-import {Injectable} from '@angular/core';
+		fmt.Fprintln(&buf, `import {Injectable} from '@angular/core';
 import {Http, Response, RequestOptions, RequestMethod, Headers} from "@angular/http";
-import {Observable} from "rxjs/Observable";
-import {AuthService} from "./auth.service"`)
+import {Observable} from "rxjs/Observable";`)
 	}
 	for _, d := range file.GetDependency() {
 		if d == "google/api/annotations.proto" || d == "github.com/gogo/protobuf/gogoproto/gogo.proto" {
@@ -156,9 +182,13 @@ import {AuthService} from "./auth.service"`)
 		if fe != nil {
 			return "", fe
 		}
-		fbase := strings.TrimSuffix(ff.GetName(), filepath.Ext(ff.GetName()))
-		pn := ff.GetPackage() + "_" + fbase
-		fmt.Fprintf(&buf, "import * as %s from \"./%s.pb\";\n", pn, p)
+		pn := g.importName(ff)
+		dir := filepath.Dir(g.getFileName(ff))
+		if !strings.HasPrefix(dir, ".") {
+			dir = fmt.Sprintf("./%s", dir)
+		}
+		p = fmt.Sprintf("%s/%s.pb", dir, p)
+		fmt.Fprintf(&buf, "import * as %s from \"%s\";\n", pn, p)
 	}
 
 	fmt.Fprintln(&buf, "")
@@ -174,12 +204,22 @@ import {AuthService} from "./auth.service"`)
 	}
 
 	for _, e := range file.Enums {
-		fmt.Fprintf(&buf, "export declare enum %s {\n", e.GetName())
-		for _, v := range e.GetValue() {
-			//    APP = <any> "APP",
-			fmt.Fprintf(&buf, "    %s = <any> \"%s\",\n", v.GetName(), v.GetName())
+		enumName := e.GetName()
+		if len(e.Outers) > 0 {
+			enumName = strings.Join(e.Outers, "") + enumName
 		}
-		fmt.Fprintln(&buf, "}")
+		en := fmt.Sprintf("export type %s = ", enumName)
+		for i, v := range e.GetValue() {
+			en = fmt.Sprintf(`%s "%s" `, en, v.GetName())
+			if i != len(e.GetValue())-1 {
+				en = fmt.Sprintf(`%s |`, en)
+			}
+		}
+		fmt.Fprintf(&buf, "%s;\n", en)
+		for _, v := range e.GetValue() {
+			fmt.Fprintf(&buf, "export const %s_%s = \"%s\";\n", enumName, v.GetName(), v.GetName())
+		}
+		fmt.Fprintln(&buf, "")
 	}
 
 	for _, m := range file.Messages {
@@ -187,12 +227,15 @@ import {AuthService} from "./auth.service"`)
 		if m.GetOptions().GetMapEntry() {
 			continue
 		}
-		fmt.Fprintf(&buf, "export class %s {\n", m.GetName())
+		prefix := ""
+		if len(m.Outers) > 0 {
+			prefix = strings.Join(m.Outers, "")
+		}
+		fmt.Fprintf(&buf, "export class %s {\n", prefix+m.GetName())
 		for _, f := range m.GetField() {
 			g.printMessageField(&buf, f, file)
-			//	glog.Errorf("  field %s name '%s':'%v':'%s'", f.GetJsonName(), f.GetName(), f.GetType(), f.GetTypeName())
 		}
-		fmt.Fprintln(&buf, "}")
+		fmt.Fprintln(&buf, "}\n")
 	}
 
 	for _, s := range file.Services {
@@ -200,9 +243,14 @@ import {AuthService} from "./auth.service"`)
 @Injectable()
 export class %sService {
   host: string;
+  headerEditors: any[];
 
-  constructor(private http: Http, private auth:AuthService) {
+  constructor(private http: Http) {
     this.host = "http://localhost:18866";
+  }
+
+  addHeaderEditor(m: any) {
+    this.headerEditors.push(m)
   }
 
   private _extractData(res: Response) {
@@ -212,9 +260,9 @@ export class %sService {
 
   private _handleError(error: any, cauth: Observable<void>) {
     let errMsg = (error.message) ? error.message :
-      (error.status ? error.status+" - "+error.statusText : 'Server error')
-		console.error(errMsg);
-		return Observable.throw(errMsg);
+      (error.status ? error.status + " - " + error.statusText : 'Server error')
+    console.error(errMsg);
+    return Observable.throw(errMsg);
   }
 `, s.GetName())
 		for _, m := range s.Methods {
@@ -246,7 +294,7 @@ export class %sService {
 			if allFieldsUsedForUrl {
 				inputType = ""
 				for _, f := range inMessage.GetField() {
-					inputType = fmt.Sprintf("%s,%s:%s", inputType, f.GetJsonName(), g.getTypeName(f.GetType(), f, file))
+					inputType = fmt.Sprintf("%s, %s: %s", inputType, f.GetJsonName(), g.getTypeName(f.GetType(), f, file))
 				}
 				inputType = inputType[1:]
 			}
@@ -263,7 +311,9 @@ export class %sService {
 			fmt.Fprintf(&buf, `
   %s(%s): Observable<%s> {
     let _headers = new Headers();
-    this.auth.setAuthToHeaders(_headers);
+    for (let i = 0; i < this.headerEditors.length; ++i) {
+      this.headerEditors[i].edit(_headers);
+    }
     let _args = new RequestOptions({
       method: RequestMethod.%s,
       headers: _headers,
