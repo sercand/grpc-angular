@@ -13,7 +13,65 @@ import (
 	plugin "github.com/golang/protobuf/protoc-gen-go/plugin"
 	"github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway/descriptor"
 	gen "github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway/generator"
+	"github.com/valyala/fasttemplate"
 	"path"
+)
+
+var (
+	methodString = `
+  {{funcName}}({{input}}): Observable<{{outType}}> {
+    let _headers = new Headers();
+	let _query = new URLSearchParams();
+    _headers.append("Content-Type", "application/json");
+    for (let i = 0; i < this.headerEditors.length; ++i) {
+      this.headerEditors[i].edit(_headers);
+    }
+    let _args = new RequestOptions({
+      method: RequestMethod.{{method}},
+      headers: _headers,
+      search: _query,
+      body: {{body}}
+    });
+    {{query}}
+    return this.http.request({{url}}, _args)
+      .map(this._extractData)
+      .catch(this._handleError);
+  }
+	`
+	tempMethod    = fasttemplate.New(methodString, "{{", "}}")
+	serviceString = `
+@Injectable()
+export class {{serviceName}}Service {
+  host: string;
+  headerEditors: any[];
+
+  constructor(private http: Http) {
+    this.host = "http://localhost:18870";
+    this.headerEditors=[];
+  }
+
+  addHeaderEditor(m: any) {
+    this.headerEditors.push(m)
+  }
+
+  private _extractData(res: Response) {
+    let body = res.json();
+    return body || {};
+  }
+
+  private _handleError(error: any, cauth: Observable<void>) {
+    let errMsg = (error._body) ? error._body :
+      (error.status ? error.status + " - " + error.statusText : 'Server error')
+    return Observable.throw(errMsg);
+  }
+`
+	tempService = fasttemplate.New(serviceString, "{{", "}}")
+	queryString = `
+	if([input].[field]){
+		_query.append("[fieldName]", ` + "`${" + `[input].[field]` + "}`" + `)
+	}`
+	templateQuery = fasttemplate.New(queryString, "[", "]")
+	templateEnum = fasttemplate.New("export const {enumType}_{enumName}: {enumType} = \"{enumName}\";\n", "{", "}")
 )
 
 type packageAlias struct {
@@ -169,8 +227,10 @@ func (g *generator) generate(file *descriptor.File) (string, error) {
 `)
 	if len(file.Services) > 0 {
 		fmt.Fprintln(&buf, `import {Injectable} from '@angular/core';
-import {Http, Response, RequestOptions, RequestMethod, Headers} from "@angular/http";
-import {Observable} from "rxjs/Observable";`)
+import {Http, Response, RequestOptions, RequestMethod, Headers, URLSearchParams} from "@angular/http";
+import {Observable} from "rxjs/Observable";
+import 'rxjs/add/observable/throw';
+import 'rxjs/add/operator/catch';`)
 	}
 	for _, d := range file.GetDependency() {
 		if d == "google/api/annotations.proto" || d == "github.com/gogo/protobuf/gogoproto/gogo.proto" {
@@ -204,11 +264,11 @@ import {Observable} from "rxjs/Observable";`)
 	}
 
 	for _, e := range file.Enums {
-		enumName := e.GetName()
+		enumType := e.GetName()
 		if len(e.Outers) > 0 {
-			enumName = strings.Join(e.Outers, "") + enumName
+			enumType = strings.Join(e.Outers, "") + enumType
 		}
-		en := fmt.Sprintf("export type %s = ", enumName)
+		en := fmt.Sprintf("export type %s = ", enumType)
 		for i, v := range e.GetValue() {
 			en = fmt.Sprintf(`%s "%s" `, en, v.GetName())
 			if i != len(e.GetValue())-1 {
@@ -217,7 +277,10 @@ import {Observable} from "rxjs/Observable";`)
 		}
 		fmt.Fprintf(&buf, "%s;\n", en)
 		for _, v := range e.GetValue() {
-			fmt.Fprintf(&buf, "export const %s_%s = \"%s\";\n", enumName, v.GetName(), v.GetName())
+			templateEnum.Execute(&buf, map[string]interface{}{
+				"enumType": enumType,
+				"enumName": v.GetName(),
+			})
 		}
 		fmt.Fprintln(&buf, "")
 	}
@@ -239,32 +302,9 @@ import {Observable} from "rxjs/Observable";`)
 	}
 
 	for _, s := range file.Services {
-		fmt.Fprintf(&buf, `
-@Injectable()
-export class %sService {
-  host: string;
-  headerEditors: any[];
-
-  constructor(private http: Http) {
-    this.host = "http://localhost:18866";
-  }
-
-  addHeaderEditor(m: any) {
-    this.headerEditors.push(m)
-  }
-
-  private _extractData(res: Response) {
-    let body = res.json();
-    return body || {};
-  }
-
-  private _handleError(error: any, cauth: Observable<void>) {
-    let errMsg = (error.message) ? error.message :
-      (error.status ? error.status + " - " + error.statusText : 'Server error')
-    console.error(errMsg);
-    return Observable.throw(errMsg);
-  }
-`, s.GetName())
+		tempService.Execute(&buf, map[string]interface{}{
+			"serviceName": s.GetName(),
+		})
 		for _, m := range s.Methods {
 			if len(m.Bindings) == 0 {
 				continue
@@ -283,47 +323,60 @@ export class %sService {
 				}
 			}
 			inputName := ToParamName(m.GetInputType())
-			body := fmt.Sprintf("body: JSON.stringify(%s),", inputName)
+			body := fmt.Sprintf("%s,", inputName)
+			query := ""
 			if method == "Get" || method == "Delete" {
-				body = ""
+				body = "{},"
+				glog.V(20).Infof("GET: %v %v", b.PathTmpl.Fields, inMessage.Fields)
+				if !allFieldsUsedForUrl {
+					for _, f := range inMessage.Fields {
+						founded := false
+						for _, pf := range b.PathTmpl.Fields {
+							if pf == f.GetName() {
+								founded = true
+								break
+							}
+						}
+						if !founded {
+
+							query = query + templateQuery.ExecuteString(map[string]interface{}{
+								"input":     inputName,
+								"field":     ToJsonName(f.GetName()),
+								"fieldName": f.GetName(),
+							})
+						}
+					}
+				}
 			}
 			if allFieldsUsedForUrl && (method == "Post" || method == "Put") {
-				body = "body: \"{}\","
+				body = "{},"
 			}
 			inputType := fmt.Sprintf("%s: %s", inputName, g.getRawTypeName(file, m.GetInputType()))
-			if allFieldsUsedForUrl {
+			if allFieldsUsedForUrl && len(inMessage.Fields) > 0 {
 				inputType = ""
 				for _, f := range inMessage.GetField() {
 					inputType = fmt.Sprintf("%s, %s: %s", inputType, f.GetJsonName(), g.getTypeName(f.GetType(), f, file))
 				}
 				inputType = inputType[1:]
 			}
-			temp := b.PathTmpl.Template
+			urlTemp := b.PathTmpl.Template
 			for _, r := range b.PathTmpl.Fields {
 				if allFieldsUsedForUrl {
-					temp = strings.Replace(temp, fmt.Sprintf("{%s}", r), fmt.Sprintf("${%s}", ToJsonName(r)), -1)
+					urlTemp = strings.Replace(urlTemp, fmt.Sprintf("{%s}", r), fmt.Sprintf("${%s}", ToJsonName(r)), -1)
 				} else {
-					temp = strings.Replace(temp, fmt.Sprintf("{%s}", r), fmt.Sprintf("${%s.%s}", inputName, ToJsonName(r)), -1)
+					urlTemp = strings.Replace(urlTemp, fmt.Sprintf("{%s}", r), fmt.Sprintf("${%s.%s}", inputName, ToJsonName(r)), -1)
 				}
 			}
-			url := fmt.Sprintf("`${this.host}%s`", temp)
-
-			fmt.Fprintf(&buf, `
-  %s(%s): Observable<%s> {
-    let _headers = new Headers();
-    for (let i = 0; i < this.headerEditors.length; ++i) {
-      this.headerEditors[i].edit(_headers);
-    }
-    let _args = new RequestOptions({
-      method: RequestMethod.%s,
-      headers: _headers,
-      %s
-    });
-    return this.http.request(%s, _args)
-      .map(this._extractData)
-      .catch(this._handleError);
-  }
-`, ToJsonName(m.GetName()), inputType, g.getRawTypeName(file, m.GetOutputType()), method, body, url)
+			url := fmt.Sprintf("`${this.host}%s`", urlTemp)
+			tempMethod.Execute(&buf, map[string]interface{}{
+				"funcName": ToJsonName(m.GetName()),
+				"input":    inputType,
+				"outType":  g.getRawTypeName(file, m.GetOutputType()),
+				"method":   method,
+				"body":     body,
+				"query":    query,
+				"url":      url,
+			})
 		}
 		fmt.Fprintln(&buf, "}")
 	}

@@ -1,0 +1,23 @@
+hash: 5aa5b930094946abd78e16e9ab42b0eaf6c8c0dbe21a5d4bcaaa73f5ac68478c
+updated: 2016-08-29T13:20:35.520689923+03:00
+imports:
+- name: github.com/golang/glog
+  version: 23def4e6c14b4da8ac2ed8007337bc5eb5007998
+- name: github.com/golang/protobuf
+  version: f592bd283e9ef86337a432eb50e592278c3d534d
+  subpackages:
+  - proto
+  - protoc-gen-go/descriptor
+  - protoc-gen-go/generator
+  - protoc-gen-go/plugin
+- name: github.com/grpc-ecosystem/grpc-gateway
+  version: 331418a167bc76e7e4e7469cf704033eddaba7a5
+  subpackages:
+  - protoc-gen-grpc-gateway/descriptor
+  - protoc-gen-grpc-gateway/generator
+  - protoc-gen-grpc-gateway/httprule
+  - third_party/googleapis/google/api
+  - utilities
+- name: github.com/valyala/fasttemplate
+  version: 3b874956e03f1636d171bda64b130f9135f42cff
+testImports: []

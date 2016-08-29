@@ -1,0 +1,13 @@
+package: github.com/sercand/grpc-angular
+import:
+- package: github.com/golang/glog
+- package: github.com/golang/protobuf
+  subpackages:
+  - proto
+  - protoc-gen-go/descriptor
+  - protoc-gen-go/plugin
+- package: github.com/grpc-ecosystem/grpc-gateway
+  subpackages:
+  - protoc-gen-grpc-gateway/descriptor
+  - protoc-gen-grpc-gateway/generator
+- package: github.com/valyala/fasttemplate
