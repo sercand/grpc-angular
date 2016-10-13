@@ -40,7 +40,7 @@ var (
   }
 
    `
-	tempMethod    = fasttemplate.New(methodString, "{{", "}}")
+	tempMethod = fasttemplate.New(methodString, "{{", "}}")
 	serviceString = `@Injectable()
 export class {{serviceName}}Service {
   host: string;
@@ -72,7 +72,7 @@ export class {{serviceName}}Service {
 		_query.append("[fieldName]", ` + "`${" + `[input].[field]` + "}`" + `)
 	}`
 	templateQuery = fasttemplate.New(queryString, "[", "]")
-	templateEnum  = fasttemplate.New("export const {enumType}_{enumName}: {enumType} = \"{enumName}\";\n", "{", "}")
+	templateEnum = fasttemplate.New("export const {enumType}_{enumName}: {enumType} = \"{enumName}\";\n", "{", "}")
 )
 
 type packageAlias struct {
@@ -137,9 +137,9 @@ func (g *generator) getRawTypeName(file *descriptor.File, a string) string {
 		return ""
 	}
 	if mf.GetName() == file.GetName() {
-		return prefix + ss[len(ss)-1]
+		return prefix + ss[len(ss) - 1]
 	} else {
-		return g.importName(mf) + "." + prefix + ss[len(ss)-1]
+		return g.importName(mf) + "." + prefix + ss[len(ss) - 1]
 	}
 }
 
@@ -149,12 +149,14 @@ func (g *generator) getTypeName(t desc.FieldDescriptorProto_Type, field *desc.Fi
 		return "string"
 	case desc.FieldDescriptorProto_TYPE_BOOL:
 		return "boolean"
-	case desc.FieldDescriptorProto_TYPE_FIXED32, desc.FieldDescriptorProto_TYPE_FIXED64, desc.FieldDescriptorProto_TYPE_DOUBLE:
+	case desc.FieldDescriptorProto_TYPE_FIXED32, desc.FieldDescriptorProto_TYPE_DOUBLE:
 		return "number"
-	case desc.FieldDescriptorProto_TYPE_FLOAT, desc.FieldDescriptorProto_TYPE_INT32, desc.FieldDescriptorProto_TYPE_INT64:
+	case desc.FieldDescriptorProto_TYPE_FLOAT, desc.FieldDescriptorProto_TYPE_INT32, desc.FieldDescriptorProto_TYPE_UINT32:
 		return "number"
-	case desc.FieldDescriptorProto_TYPE_UINT32, desc.FieldDescriptorProto_TYPE_UINT64:
-		return "number"
+	case desc.FieldDescriptorProto_TYPE_INT64, desc.FieldDescriptorProto_TYPE_FIXED64, desc.FieldDescriptorProto_TYPE_UINT64:
+		return "string|number"
+	case desc.FieldDescriptorProto_TYPE_BYTES:
+		return "string"
 	case desc.FieldDescriptorProto_TYPE_ENUM:
 		return g.getRawTypeName(file, field.GetTypeName())
 	case desc.FieldDescriptorProto_TYPE_MESSAGE:
@@ -178,9 +180,13 @@ func (g *generator) isMap(field *desc.FieldDescriptorProto) bool {
 
 func (g *generator) printMessageField(w io.Writer, field *desc.FieldDescriptorProto, file *descriptor.File) {
 	if g.isMap(field) {
-		fmt.Fprintf(w, "  %s: any;\n", field.GetJsonName())
+		fmt.Fprintf(w, "  %s: Object;\n", field.GetJsonName())
 	} else if field.GetLabel() == desc.FieldDescriptorProto_LABEL_REPEATED {
-		fmt.Fprintf(w, "  %s: %s[];\n", field.GetJsonName(), g.getTypeName(field.GetType(), field, file))
+		tn := g.getTypeName(field.GetType(), field, file)
+		if strings.Index(tn, "|") > -1 {
+			tn = strings.Replace(tn, "|", "[]|", 1)
+		}
+		fmt.Fprintf(w, "  %s: %s[];\n", field.GetJsonName(), tn)
 	} else {
 		fmt.Fprintf(w, "  %s: %s;\n", field.GetJsonName(), g.getTypeName(field.GetType(), field, file))
 	}
@@ -193,7 +199,7 @@ func ToJsonName(pre string) string {
 	word := pre[:1]
 	ss := make([]string, 0)
 	for i := 1; i < len(pre); i++ {
-		letter := pre[i : i+1]
+		letter := pre[i : i + 1]
 		if word != "" && strings.ToUpper(letter) == letter {
 			ss = append(ss, word)
 			if letter != "_" && letter != "-" {
@@ -218,15 +224,11 @@ func ToJsonName(pre string) string {
 
 func ToParamName(pre string) string {
 	ss := strings.Split(pre, ".")
-	return ToJsonName(ss[len(ss)-1])
+	return ToJsonName(ss[len(ss) - 1])
 }
-func printComment(b io.Writer, command string) {
-	if len(command) > 0 {
-		if strings.Count(command, "\n") > 0 {
-			fmt.Fprintf(b, "/*\n%s\n*/\n", command)
-		} else {
-			fmt.Fprintf(b, "// %s\n", command)
-		}
+func printComment(b io.Writer, comment string) {
+	if len(comment) > 0 {
+		fmt.Fprintf(b, "/**\n%s\n*/\n", comment)
 	}
 }
 func (g *generator) generate(file *descriptor.File) (string, error) {
@@ -281,7 +283,7 @@ import 'rxjs/add/operator/catch';`)
 		en := fmt.Sprintf("export type %s = ", enumType)
 		for i, v := range e.GetValue() {
 			en = fmt.Sprintf(`%s "%s" `, en, v.GetName())
-			if i != len(e.GetValue())-1 {
+			if i != len(e.GetValue()) - 1 {
 				en = fmt.Sprintf(`%s |`, en)
 			}
 		}
@@ -306,7 +308,7 @@ import 'rxjs/add/operator/catch';`)
 			prefix = strings.Join(m.Outers, "")
 		}
 		printComment(&buf, protoComments(g.reg, m.File, m.Outers, "MessageType", int32(m.Index)))
-		fmt.Fprintf(&buf, "export class %s {\n", prefix+m.GetName())
+		fmt.Fprintf(&buf, "export class %s {\n", prefix + m.GetName())
 		for i, f := range m.GetField() {
 			fieldProtoPath := protoPathIndex(reflect.TypeOf((*desc.DescriptorProto)(nil)), "Field")
 			printComment(&buf, protoComments(g.reg, m.File, m.Outers, "MessageType", int32(m.Index), fieldProtoPath, int32(i)))
@@ -437,7 +439,7 @@ func protoComments(reg *descriptor.Registry, file *descriptor.File, outers []str
 			location = file.GetPackage()
 		}
 
-		msg, err := reg.LookupMsg(location, strings.Join(outers[:i+1], "."))
+		msg, err := reg.LookupMsg(location, strings.Join(outers[:i + 1], "."))
 		if err != nil {
 			panic(err)
 		}
@@ -479,7 +481,7 @@ func isProtoPathMatches(paths []int32, outerPaths []int32, typeName string, type
 		return true
 	}
 
-	if len(paths) != len(outerPaths)*2+2+len(fieldPaths) {
+	if len(paths) != len(outerPaths) * 2 + 2 + len(fieldPaths) {
 		return false
 	}
 
@@ -492,11 +494,11 @@ func isProtoPathMatches(paths []int32, outerPaths []int32, typeName string, type
 		outerPaths = outerPaths[1:]
 
 		for i, v := range outerPaths {
-			if paths[i*2] != nestedProtoPath || paths[i*2+1] != v {
+			if paths[i * 2] != nestedProtoPath || paths[i * 2 + 1] != v {
 				return false
 			}
 		}
-		paths = paths[len(outerPaths)*2:]
+		paths = paths[len(outerPaths) * 2:]
 
 		if typeName == "MessageType" {
 			typeName = "NestedType"
