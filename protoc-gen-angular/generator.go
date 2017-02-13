@@ -40,7 +40,7 @@ var (
   }
 
    `
-	tempMethod = fasttemplate.New(methodString, "{{", "}}")
+	tempMethod    = fasttemplate.New(methodString, "{{", "}}")
 	serviceString = `@Injectable()
 export class {{serviceName}}Service {
   host: string;
@@ -72,7 +72,7 @@ export class {{serviceName}}Service {
 		_query.append("[fieldName]", ` + "`${" + `[input].[field]` + "}`" + `)
 	}`
 	templateQuery = fasttemplate.New(queryString, "[", "]")
-	templateEnum = fasttemplate.New("export const {enumType}_{enumName}: {enumType} = \"{enumName}\";\n", "{", "}")
+	templateEnum  = fasttemplate.New("export const {enumType}_{enumName}: {enumType} = \"{enumName}\";\n", "{", "}")
 )
 
 type packageAlias struct {
@@ -102,10 +102,11 @@ func (g *generator) getFileName(file *descriptor.File) string {
 
 func (g *generator) importName(file *descriptor.File) string {
 	fname := g.getFileName(file)
-	fbase := strings.TrimSuffix(fname, filepath.Ext(fname))
+	fbase := file.GetPackage() + "_" + strings.TrimSuffix(fname, filepath.Ext(fname))
 	fbase = strings.Replace(fbase, "/", "_", -1)
 	fbase = strings.Replace(fbase, ".", "_", -1)
-	return file.GetPackage() + "_" + fbase
+	fbase = strings.Replace(fbase, "-", "_", -1)
+	return fbase
 }
 
 func (g *generator) getRawTypeName(file *descriptor.File, a string) string {
@@ -137,9 +138,9 @@ func (g *generator) getRawTypeName(file *descriptor.File, a string) string {
 		return ""
 	}
 	if mf.GetName() == file.GetName() {
-		return prefix + ss[len(ss) - 1]
+		return prefix + ss[len(ss)-1]
 	} else {
-		return g.importName(mf) + "." + prefix + ss[len(ss) - 1]
+		return g.importName(mf) + "." + prefix + ss[len(ss)-1]
 	}
 }
 
@@ -180,7 +181,23 @@ func (g *generator) isMap(field *desc.FieldDescriptorProto) bool {
 
 func (g *generator) printMessageField(w io.Writer, field *desc.FieldDescriptorProto, file *descriptor.File) {
 	if g.isMap(field) {
-		fmt.Fprintf(w, "  %s: Object;\n", field.GetJsonName())
+		mapEntry, err := g.reg.LookupMsg(file.GetPackage(), field.GetTypeName())
+		if err != nil {
+			return
+		}
+		var valueField *desc.FieldDescriptorProto
+		for _, ff := range mapEntry.GetField() {
+			if ff.GetName() == "value" {
+				valueField = ff
+				break
+			}
+		}
+
+		fasttemplate.New(`  {{fieldName}}: { [key: string]: {{valueType}} };
+		`, "{{", "}}").Execute(w, map[string]interface{}{
+			"fieldName": field.GetJsonName(),
+			"valueType": g.getTypeName(valueField.GetType(), valueField, file),
+		})
 	} else if field.GetLabel() == desc.FieldDescriptorProto_LABEL_REPEATED {
 		tn := g.getTypeName(field.GetType(), field, file)
 		if strings.Index(tn, "|") > -1 {
@@ -199,7 +216,7 @@ func ToJsonName(pre string) string {
 	word := pre[:1]
 	ss := make([]string, 0)
 	for i := 1; i < len(pre); i++ {
-		letter := pre[i : i + 1]
+		letter := pre[i : i+1]
 		if word != "" && strings.ToUpper(letter) == letter {
 			ss = append(ss, word)
 			if letter != "_" && letter != "-" {
@@ -224,7 +241,7 @@ func ToJsonName(pre string) string {
 
 func ToParamName(pre string) string {
 	ss := strings.Split(pre, ".")
-	return ToJsonName(ss[len(ss) - 1])
+	return ToJsonName(ss[len(ss)-1])
 }
 func printComment(b io.Writer, comment string) {
 	if len(comment) > 0 {
@@ -283,7 +300,7 @@ import 'rxjs/add/operator/catch';`)
 		en := fmt.Sprintf("export type %s = ", enumType)
 		for i, v := range e.GetValue() {
 			en = fmt.Sprintf(`%s "%s" `, en, v.GetName())
-			if i != len(e.GetValue()) - 1 {
+			if i != len(e.GetValue())-1 {
 				en = fmt.Sprintf(`%s |`, en)
 			}
 		}
@@ -308,7 +325,7 @@ import 'rxjs/add/operator/catch';`)
 			prefix = strings.Join(m.Outers, "")
 		}
 		printComment(&buf, protoComments(g.reg, m.File, m.Outers, "MessageType", int32(m.Index)))
-		fmt.Fprintf(&buf, "export class %s {\n", prefix + m.GetName())
+		fmt.Fprintf(&buf, "export class %s {\n", prefix+m.GetName())
 		for i, f := range m.GetField() {
 			fieldProtoPath := protoPathIndex(reflect.TypeOf((*desc.DescriptorProto)(nil)), "Field")
 			printComment(&buf, protoComments(g.reg, m.File, m.Outers, "MessageType", int32(m.Index), fieldProtoPath, int32(i)))
@@ -329,16 +346,10 @@ import 'rxjs/add/operator/catch';`)
 			printComment(&buf, protoComments(g.reg, s.File, nil, "Service", int32(svcIdx), methProtoPath, int32(methIdx)))
 			b := m.Bindings[0]
 			method := b.HTTPMethod[:1] + strings.ToLower(b.HTTPMethod[1:])
-			pack := *file.Package
 			allFieldsUsedForUrl := false
-			var inMessage *descriptor.Message
-			for _, mes := range file.Messages {
-				mName := fmt.Sprintf(".%s.%s", pack, mes.GetName())
-				if mName == m.GetInputType() {
-					allFieldsUsedForUrl = len(mes.Fields) == len(b.PathTmpl.Fields)
-					inMessage = mes
-					break
-				}
+			inMessage, err := g.reg.LookupMsg(file.GetName(), m.GetInputType())
+			if err == nil {
+				allFieldsUsedForUrl = len(inMessage.Fields) == len(b.PathTmpl.Fields)
 			}
 			inputName := ToParamName(m.GetInputType())
 			body := fmt.Sprintf("%s,", inputName)
@@ -356,7 +367,6 @@ import 'rxjs/add/operator/catch';`)
 							}
 						}
 						if !founded {
-
 							query = query + templateQuery.ExecuteString(map[string]interface{}{
 								"input":     inputName,
 								"field":     ToJsonName(f.GetName()),
@@ -376,6 +386,9 @@ import 'rxjs/add/operator/catch';`)
 					inputType = fmt.Sprintf("%s, %s: %s", inputType, f.GetJsonName(), g.getTypeName(f.GetType(), f, file))
 				}
 				inputType = inputType[1:]
+			}
+			if allFieldsUsedForUrl && len(inMessage.Fields) == 0 {
+				inputType = ""
 			}
 			urlTemp := b.PathTmpl.Template
 			for _, r := range b.PathTmpl.Fields {
@@ -439,7 +452,7 @@ func protoComments(reg *descriptor.Registry, file *descriptor.File, outers []str
 			location = file.GetPackage()
 		}
 
-		msg, err := reg.LookupMsg(location, strings.Join(outers[:i + 1], "."))
+		msg, err := reg.LookupMsg(location, strings.Join(outers[:i+1], "."))
 		if err != nil {
 			panic(err)
 		}
@@ -481,7 +494,7 @@ func isProtoPathMatches(paths []int32, outerPaths []int32, typeName string, type
 		return true
 	}
 
-	if len(paths) != len(outerPaths) * 2 + 2 + len(fieldPaths) {
+	if len(paths) != len(outerPaths)*2+2+len(fieldPaths) {
 		return false
 	}
 
@@ -494,11 +507,11 @@ func isProtoPathMatches(paths []int32, outerPaths []int32, typeName string, type
 		outerPaths = outerPaths[1:]
 
 		for i, v := range outerPaths {
-			if paths[i * 2] != nestedProtoPath || paths[i * 2 + 1] != v {
+			if paths[i*2] != nestedProtoPath || paths[i*2+1] != v {
 				return false
 			}
 		}
-		paths = paths[len(outerPaths) * 2:]
+		paths = paths[len(outerPaths)*2:]
 
 		if typeName == "MessageType" {
 			typeName = "NestedType"
